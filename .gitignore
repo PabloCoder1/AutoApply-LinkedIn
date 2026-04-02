@@ -1,0 +1,14 @@
+# Ambientes Virtuais
+venv/
+env/
+.env
+
+# Sessão e Cookies (NUNCA SUBIR ISSO)
+linkedin_session/
+
+# Arquivos locais de auditoria (opcional subir ou não, mas recomendo ignorar no inicio)
+vagas_pendentes.csv
+
+# Cache do Python
+__pycache__/
+*.py[cod]
