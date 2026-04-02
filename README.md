@@ -1,60 +1,45 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<body>
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Playwright-2496ED?style=for-the-badge&logo=playwright&logoColor=white" alt="Playwright">
+  <img src="https://img.shields.io/badge/Status-Em%20Desenvolvimento-yellow?style=for-the-badge" alt="Status">
+</p>
 
-    <p align="center">
-        <img src="https://img.shields.io/badge/Python-3.14-blue.svg" alt="Python Version">
-        <img src="https://img.shields.io/badge/Library-Playwright-green.svg" alt="Playwright">
-        <img src="https://img.shields.io/badge/Status-Desenvolvimento-yellow.svg" alt="Status">
-    </p>
+<h1 align="center">🤖 AutoApply-LinkedIn</h1>
 
-    <h1 align="center">🚀 AutoApply-LinkedIn</h1>
+<p align="center">
+  <strong>Solução de RPA Inteligente para Candidaturas Estratégicas no LinkedIn</strong>
+</p>
 
-    <p align="center">
-        <strong>Automação Inteligente para Candidaturas no LinkedIn</strong>
-    </p>
+---
 
-    <p>
-        O <strong>AutoApply-LinkedIn</strong> é uma solução de RPA (Robotic Process Automation) desenvolvida para otimizar a busca e candidatura em vagas de tecnologia. O projeto utiliza lógica de processamento de linguagem simples para interpretar formulários dinâmicos e aplicar critérios de seleção baseados em localização e regime de contratação.
-    </p>
+### 📝 Sobre o Projeto
+O **AutoApply-LinkedIn** não é apenas um disparador de currículos. É uma ferramenta de automação (RPA) desenvolvida para agir como um assistente pessoal na busca por vagas. Ele interpreta perguntas, filtra localizações indesejadas e gerencia exceções de forma autônoma.
 
-    <h2>🎯 Funcionalidades</h2>
-    <ul>
-        <li><strong>🧠 Cérebro Interpretador:</strong> Preenchimento automático de campos de experiência, pretensão salarial e idiomas.</li>
-        <li><strong>📍 Filtro de Localidade:</strong> Triagem automática para evitar vagas presenciais fora do estado de São Paulo (SP).</li>
-        <li><strong>🛡️ Modo Furtivo (Stealth):</strong> Simulação de comportamento humano para garantir a segurança da conta.</li>
-        <li><strong>⚖️ Lógica PJ vs CLT:</strong> Diferenciação automática de valores conforme o modelo de contratação.</li>
-        <li><strong>📋 Fila de Auditoria (DLQ):</strong> Registro de vagas complexas em <code>vagas_pendentes.csv</code> para revisão manual.</li>
-    </ul>
+> **Diferencial:** O bot possui uma lógica de "Fila de Auditoria", garantindo que você nunca perca uma oportunidade por causa de formulários complexos.
 
-    <h2>🛠️ Tecnologias</h2>
-    <p>Python | Playwright | Playwright-Stealth | CSV / Logs</p>
+---
 
-    <h2>🚀 Como Configurar</h2>
-    <ol>
-        <li>Clone o repositório e crie seu <code>venv</code>.</li>
-        <li>Instale as dependências: <code>pip install playwright playwright-stealth</code>.</li>
-        <li>Personalize o dicionário <code>MEU_PERFIL</code> no arquivo <code>main.py</code>.</li>
-        <li>Execute: <code>python main.py</code>.</li>
-    </ol>
+### ✨ Funcionalidades Principais
 
-    <hr>
+* **🧠 Cérebro Interpretador:** Preenchimento inteligente de anos de experiência, pretensão salarial e níveis de idioma.
+* **📍 Geofencing de Vagas:** Triagem automática para evitar vagas 100% presenciais fora do estado de São Paulo (SP).
+* **⚖️ Lógica Financeira:** Diferenciação de valores para regimes CLT e PJ automaticamente.
+* **🛡️ Stealth Architecture:** Navegação furtiva para proteção da conta e simulação de comportamento humano.
+* **📋 Dead Letter Queue (DLQ):** Registro automático de vagas pendentes no arquivo `vagas_pendentes.csv`.
 
-    <h2 align="center">📬 Contato</h2>
-    
-    <p align="center">
-        Se você tiver dúvidas sobre o projeto ou quiser trocar uma ideia sobre automação e desenvolvimento, sinta-se à vontade para me chamar!
-    </p>
+---
 
-    <p align="center">
-        <a href="https://www.linkedin.com/in/pablo-lima-aaba02269/" target="_blank">
-            <img src="https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn Pablo Lima">
-        </a>
-    </p>
+### 🛠️ Tecnologias Utilizadas
+* **Linguagem:** Python 3.14
+* **Engine:** Playwright (Async)
+* **Segurança:** Playwright-Stealth
+* **Dados:** CSV / Logs Estruturados
 
-    <p align="center">
-        <em>Desenvolvido com ☕ por <strong>Pablo Lima (PabloCoder1)</strong></em>
-    </p>
+---
 
-</body>
-</html>
+### 🚀 Como Configurar e Rodar
+
+1. **Instale as dependências:**
+   ```bash
+   pip install playwright playwright-stealth
+   playwright install chromium
