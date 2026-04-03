@@ -35,7 +35,7 @@ Nome: Pablo Lima
 E-mail: pablolima83352@gmail.com  
 Código do país: +55  
 Número de celular: +55 13 99156-0814  
-CPF: 498.114.278-10
+CPF: xxx.xxx.xxx-xx
 LinkedIn: https://www.linkedin.com/in/pablo-lima-aaba02269/
 Cargo: Analista Júnior de Sistemas | RPA | Automação 
 
