@@ -1,320 +1,457 @@
 import asyncio
 import random
 import os
-import csv
+import re
+import requests
+import sqlite3
 from datetime import datetime
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 import playwright_stealth
+from google import genai
+
+# Carrega as chaves do arquivo .env
+load_dotenv()
 
 # ==========================================
-# ⚙️ CONFIGURAÇÕES PRINCIPAIS E PERFIL
+# ⚙️ CONFIGURAÇÕES PRINCIPAIS
 # ==========================================
-TERMOS_BUSCA = ["Python", "React", "Node", "C#", "Junior"]
+TERMOS_BUSCA = ["RPA", "Python Junior", "Automação"]
 USER_DATA_DIR = "./linkedin_session"
-ARQUIVO_PENDENTES = "vagas_pendentes.csv"
+MAX_PAGINAS = 3 # Lê até 75 vagas por termo (3 páginas de 25)
 
-MEU_PERFIL = {
-    "experiencia_anos": {
-        "python": "2", "react": "1", "node": "1", "node.js": "1",
-        "javascript": "2", "js": "2", "sql": "1", "mysql": "1",
-        "postgres": "1", "c#": "2", "csharp": "2", "dotnet": "2",
-        ".net": "2", "html": "2", "css": "2", "tailwind": "1",
-        "bootstrap": "1", "api": "1", "rest": "1", "git": "1",
-        "docker": "0"
-    },
-    "anos_padrao": "2",
-    "telefone": "13991560814",
-    
-    "salario_clt": "3500",
-    "salario_pj": "5500",
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-    "idiomas_nivel": {
-        "english": "Advanced",
-        "inglês": "Avançado",
-        "spanish": "Advanced",
-        "espanhol": "Avançado"
-    },
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-    "sim_nao": {
-        "12x36": "Não", "madrugada": "Não", "noturno": "Não",
-        "plantão": "Não", "finais de semana": "Não", "fim de semana": "Não",
-        
-        "cnh": "Sim", "driver license": "Sim", "driving license": "Sim",
-        "carro": "Não", "vehicle": "Não",
-        "deficiencia": "Não", "disability": "Não", "pcd": "Não",
-        "availability": "Sim", "available": "Sim",
-        "travel": "Sim", "relocate": "Sim", "relocation": "Sim",
-        "visa": "Sim", "work permit": "Sim", "authorized": "Sim",
-        "remote": "Sim", "home office": "Sim", "on-site": "Não", 
-        "onsite": "Não", "presencial": "Não", "hybrid": "Sim",
-        "background check": "Sim", "criminal record": "Não",
-        "degree": "Sim", "bachelor": "Sim", "college": "Sim", "university": "Sim",
-        "locomover": "Sim", "deslocar": "Sim", "deslocamento": "Sim", "commute": "Sim"
-    }
-}
+# Memória de curto prazo
+cache_respostas = {}
 
 # ==========================================
-# 🛠️ FUNÇÕES BASE E SEGURANÇA
+# 📍 SEU PERFIL (A base da IA)
 # ==========================================
-async def human_delay(min_sec=1.5, max_sec=3.5):
-    await asyncio.sleep(random.uniform(min_sec, max_sec))
+MEU_PERFIL_RESUMIDO = """
+Nome: Pablo Lima. 
+E-mail: pablolima83352@gmail.com
+Código do país: +55
+Número de celular: 13991560814
+Currículo: Pablo Lima dos Santos.pdf
+Cargo: Analista Junior de Sistemas e RPA.
+Skills: Python (2 anos), React (1 ano), Node.js (1 ano), C#/.NET (2 anos), SQL, Git.
+Local: Santos, SP (Disponibilidade para Híbrido em SP ou Remoto).
+Inglês: Avançado. Espanhol: Avançado.
+Pretensão: CLT 3500, PJ 5500. CNH: Sim.
+Experiência corporativa: Trabalhou na Vivo (Telefónica).
+"""
 
-async def iniciar_navegador(p):
-    browser = await p.chromium.launch_persistent_context(
-        user_data_dir=USER_DATA_DIR,
-        headless=False,
-        args=["--disable-blink-features=AutomationControlled"],
-        viewport={'width': 1366, 'height': 768}
-    )
-    page = browser.pages[0] if browser.pages else await browser.new_page()
+# ==========================================
+# 🗄️ SISTEMA DE MEMÓRIA (SQLite)
+# ==========================================
+def iniciar_db():
+    conn = sqlite3.connect("dados_bot.db")
+    cursor = conn.cursor()
+    # Tabela 1: Vagas processadas
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS candidaturas (
+            id_vaga TEXT PRIMARY KEY,
+            titulo TEXT,
+            termo_busca TEXT,
+            data_processamento TEXT,
+            status TEXT,
+            link TEXT
+        )
+    """)
+    # Tabela 2: Memória Permanente de Perguntas (Economia de API)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS memoria_perguntas (
+            pergunta_limpa TEXT PRIMARY KEY,
+            resposta TEXT,
+            data_criacao TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def vaga_ja_processada(id_vaga):
+    if not id_vaga: return False
+    conn = sqlite3.connect("dados_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM candidaturas WHERE id_vaga = ?", (id_vaga,))
+    resultado = cursor.fetchone()
+    conn.close()
+    return resultado is not None
+
+def registrar_no_db(id_vaga, titulo, termo, status, link):
+    if not id_vaga: return
+    conn = sqlite3.connect("dados_bot.db")
+    cursor = conn.cursor()
+    data_atual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        if hasattr(playwright_stealth, 'stealth_async'):
-            await playwright_stealth.stealth_async(page)
-        else:
-            playwright_stealth.stealth_sync(page)
+        cursor.execute("""
+            INSERT OR REPLACE INTO candidaturas 
+            (id_vaga, titulo, termo_busca, data_processamento, status, link)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (id_vaga, titulo, termo, data_atual, status, link))
+        conn.commit()
     except: pass
-    return browser, page
+    finally: conn.close()
 
-def salvar_vaga_pendente(termo, titulo, link):
-    arquivo_existe = os.path.isfile(ARQUIVO_PENDENTES)
+def buscar_resposta_salva(pergunta):
+    conn = sqlite3.connect("dados_bot.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT resposta FROM memoria_perguntas WHERE pergunta_limpa = ?", (pergunta,))
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else None
+
+def salvar_resposta_na_memoria(pergunta, resposta):
+    conn = sqlite3.connect("dados_bot.db")
+    cursor = conn.cursor()
+    data = datetime.now().strftime("%Y-%m-%d")
     try:
-        with open(ARQUIVO_PENDENTES, mode='a', newline='', encoding='utf-8') as file:
-            writer = csv.writer(file, delimiter=';')
-            if not arquivo_existe:
-                writer.writerow(['Data_Hora', 'Termo_Busca', 'Titulo_Vaga', 'Link_Vaga'])
-            data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            writer.writerow([data_hora, termo, titulo, link])
-    except Exception as e:
-        print(f"⚠️ Erro ao salvar vaga pendente: {e}")
+        cursor.execute("INSERT OR REPLACE INTO memoria_perguntas VALUES (?, ?, ?)", (pergunta, resposta, data))
+        conn.commit()
+    except: pass
+    finally: conn.close()
+
+# ==========================================
+# 🛠️ FUNÇÕES DE APOIO
+# ==========================================
+async def human_delay(a=1.5, b=3.5):
+    await asyncio.sleep(random.uniform(a, b))
+
+def enviar_telegram(msg):
+    if not TELEGRAM_TOKEN: return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": f"🤖 AutoApply:\n\n{msg}"},
+            timeout=5
+        )
+    except: pass
+
+async def rolar_lista_de_vagas(page):
+    try:
+        painel_vagas = page.locator(".jobs-search-results-list")
+        if await painel_vagas.is_visible():
+            for _ in range(3): 
+                await painel_vagas.evaluate("el => el.scrollBy(0, 1000)")
+                await asyncio.sleep(1)
+    except: pass
+
+# ==========================================
+# 🧠 CÉREBRO DA IA (Gestão de Cota + SQLite)
+# ==========================================
+async def perguntar_para_ia(pergunta, descricao, opcoes=None):
+    if not client: 
+        print("❌ ERRO FATAL: Cliente Gemini não carregado.")
+        return None
+
+    pergunta_limpa = str(pergunta).split('\n')[0].strip()
+    p_lower = pergunta_limpa.lower()
+
+    # 1. Filtro de Hardcode (Respostas óbvias sem gastar API)
+    if "first name" in p_lower or "primeiro nome" in p_lower: return "Pablo"
+    if "last name" in p_lower or "sobrenome" in p_lower: return "Lima"
+    if "e-mail" in p_lower or "email" in p_lower: return "pablolima83352@gmail.com"
+    if "phone" in p_lower or "celular" in p_lower or "telefone" in p_lower: return "13991560814"
+
+    # 2. Busca na Memória SQLite (Nunca pergunta a mesma coisa duas vezes)
+    resposta_salva = buscar_resposta_salva(pergunta_limpa)
+    if resposta_salva:
+        print(f"💾 [MEMÓRIA] Usando resposta salva para: {pergunta_limpa[:30]}...")
+        return resposta_salva
+
+    # 3. Busca no Cache de Memória RAM (Sessão atual)
+    chave = f"{pergunta_limpa}_{str(opcoes)}"
+    if chave in cache_respostas:
+        return cache_respostas[chave]
+
+    contexto_opcoes = f"\nOPÇÕES (Escolha uma): {', '.join(opcoes)}" if opcoes else ""
+
+    prompt = f"""
+    Você é o assistente de carreira do Pablo Lima.
+    PERFIL: {MEU_PERFIL_RESUMIDO}
+    
+    PERGUNTA DO FORMULÁRIO: "{pergunta_limpa}" {contexto_opcoes}
+    
+    REGRAS CRÍTICAS:
+    1. Se perguntar de "Location", "País" ou "Onde você mora", responda: "Brasil (+55)" ou "Santos, SP, Brazil" dependendo das opções.
+    2. Se for sobre multinacional, responda 'Sim'.
+    3. Se for salário, aceite se for maior ou igual a 3500.
+    4. Responda APENAS o necessário. Nada de enrolação.
+    
+    RESPOSTA:"""
+    
+    tentativas = 0
+    while tentativas < 3: 
+        try:
+            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            resposta = response.text.strip()
+            
+            if any(t in p_lower for t in ["anos", "quantos", "years", "experience"]):
+                nums = re.findall(r'\d+', resposta)
+                resposta = nums[0] if nums else "1"
+
+            # Salva nas memórias para o futuro
+            cache_respostas[chave] = resposta
+            salvar_resposta_na_memoria(pergunta_limpa, resposta)
+            
+            return resposta
+            
+        except Exception as e:
+            erro_str = str(e)
+            if "429" in erro_str or "RESOURCE_EXHAUSTED" in erro_str:
+                print(f"⏳ Cota atingida! Pausando por 40 segundos... (Tentativa {tentativas + 1}/3)")
+                await asyncio.sleep(40)
+                tentativas += 1
+            else:
+                print(f"❌ ERRO REAL DA API: {erro_str}")
+                return None 
+                
+    return None 
 
 async def analisar_local_vaga(page):
     try:
-        await human_delay(1, 2)
-        detalhes = await page.locator(".job-details-jobs-unified-top-card__primary-description-container").inner_text()
-        detalhes = detalhes.lower()
+        header_text = await page.locator(".job-details-jobs-unified-top-card__primary-description-container").inner_text()
+        header_lower = header_text.lower()
 
-        is_presencial = "presencial" in detalhes or "on-site" in detalhes
-        in_sp = "são paulo" in detalhes or " sp " in detalhes or " sp," in detalhes or ", sp" in detalhes
+        is_remoto = any(x in header_lower for x in ["remoto", "home office", "remote"])
+        is_hibrido = any(x in header_lower for x in ["híbrido", "hybrid"])
+        is_sp = any(x in header_lower for x in ["são paulo", " sp", ", sp"])
 
-        if is_presencial and not in_sp:
-            return False
-            
-        return True
-    except Exception as e:
-        return True
+        if not is_remoto and not is_hibrido and not is_sp:
+            return False, f"Presencial fora de SP ({header_text.strip()})"
+        return True, "Localização OK"
+    except: return True, "Localização ignorada"
 
 # ==========================================
-# 🤖 INTERPRETADOR (O CÉREBRO)
+# 🤖 PREENCHEDOR DE FORMULÁRIOS PRO
 # ==========================================
-async def responder_perguntas_dinamicas(page):
+async def responder_formulario(page, descricao):
     try:
-        labels = await page.locator("label").all()
-        for label in labels:
-            texto_label = await label.inner_text()
-            pergunta = texto_label.lower().strip()
-            for_attr = await label.get_attribute("for")
-            if not for_attr: continue
-                
-            campo = page.locator(f"#{for_attr}")
-            if not await campo.is_visible(): continue
-            tag_name = await campo.evaluate("el => el.tagName")
+        # Foco exclusivo no Modal da candidatura
+        modal = page.locator("[role='dialog']").last
+        if not await modal.is_visible():
+            return 
+
+        seletores = "input:not([type='hidden']):not([type='checkbox']):not([type='radio']), textarea, select, [role='combobox'], [role='textbox']"
+        campos = await modal.locator(seletores).all()
+        
+        for campo in campos:
+            if not await campo.is_visible() or not await campo.is_enabled(): continue
             
-            if tag_name == "INPUT":
-                if await campo.input_value() == "":
-                    if any(word in pergunta for word in ["salário", "pretensão", "salary", "bruto", "gross"]):
-                        if "pj" in pergunta or "jurídica" in pergunta or "contract" in pergunta:
-                            await campo.fill(MEU_PERFIL["salario_pj"])
-                        else:
-                            await campo.fill(MEU_PERFIL["salario_clt"])
-                            
-                    elif "anos" in pergunta or "experiência" in pergunta or "experience" in pergunta:
-                        respondido = False
-                        for tec, anos in MEU_PERFIL["experiencia_anos"].items():
-                            if tec in pergunta:
-                                await campo.fill(anos)
-                                respondido = True; break
-                        if not respondido: await campo.fill(MEU_PERFIL["anos_padrao"])
-                        
-                    elif "telefone" in pergunta or "phone" in pergunta or "celular" in pergunta:
-                        await campo.fill(MEU_PERFIL["telefone"])
+            await campo.evaluate("el => el.style.border = '3px solid yellow'")
 
-            elif tag_name == "SELECT":
-                if "inglês" in pergunta or "english" in pergunta or "idioma" in pergunta or "espanhol" in pergunta:
-                    for idioma, nivel in MEU_PERFIL["idiomas_nivel"].items():
-                        if idioma in pergunta:
-                            try: await campo.select_option(label=nivel); break
-                            except: pass
-                            
-                for termo_sim_nao, resposta in MEU_PERFIL["sim_nao"].items():
-                    if termo_sim_nao in pergunta:
-                        try: await campo.select_option(label=resposta)
-                        except: pass
+            pergunta = await campo.get_attribute("aria-label") or await campo.get_attribute("placeholder") or ""
+            p_id = await campo.get_attribute("id")
+            
+            if not pergunta and p_id:
+                label = page.locator(f"label[for='{p_id}']")
+                if await label.count() > 0:
+                    pergunta = await label.inner_text()
 
-        fieldsets = await page.locator("fieldset").all()
-        for fieldset in fieldsets:
-            if await fieldset.is_visible():
-                pergunta_legend = await fieldset.locator("legend").inner_text()
-                pergunta_legend = pergunta_legend.lower().strip()
-                for chave, resposta in MEU_PERFIL["sim_nao"].items():
-                    if chave in pergunta_legend:
-                        botao_resposta = fieldset.locator(f"label:has-text('{resposta}')")
-                        if await botao_resposta.is_visible() and not await fieldset.locator(f"input[type='radio']:has-text('{resposta}')").is_checked():
-                            await botao_resposta.click()
-                        break
-    except Exception as e:
-        print(f"⚠️ Aviso no Interpretador: {e}")
+            if not pergunta:
+                pergunta = await campo.evaluate("""el => {
+                    let container = el.closest('.jobs-easy-apply-form-section__grouping, .fb-dash-form-element');
+                    if (container) return container.innerText.split('\\n')[0];
+                    let prev = el.previousElementSibling;
+                    if (prev) return prev.innerText;
+                    return '';
+                }""")
 
-async def preencher_formulario_dinamico(page):
-    tentativas = 0
-    while tentativas < 6:
-        tentativas += 1
-        await human_delay(2, 3)
-        await responder_perguntas_dinamicas(page)
-        await human_delay(1, 2)
-
-        botoes_proximo = ["Avançar", "Próximo", "Next", "Review", "Revisar", "Continuar", "Continue"]
-        clicou = False
-        for texto in botoes_proximo:
-            botao = page.get_by_role("button", name=texto, exact=False).filter(has_text=texto)
-            if await botao.is_visible() and await botao.is_enabled():
-                print(f"➡️ Clicando em: {texto}")
-                await botao.click()
-                clicou = True; break
-        if clicou: continue
-
-        botao_enviar = page.get_by_role("button", name="Enviar candidatura", exact=False)
-        if await botao_enviar.is_visible() and await botao_enviar.is_enabled():
-            print("🎉 Botão FINAL encontrado! Enviando candidatura...")
-            await botao_enviar.click()
-            await human_delay(3, 5)
-            await page.keyboard.press("Escape")
-            return True
-        break
-    return False
-
-async def aplicar_na_vaga_atual(page):
-    """
-    Retorna uma tupla: (Tipo_Resultado, Mensagem)
-    Tipo_Resultado: "SUCESSO", "PULO" (Skip), ou "ERRO"
-    """
-    try:
-        await human_delay(1, 2)
-        
-        # 1. VERIFICAÇÃO DE VAGA JÁ APLICADA
-        # Lemos todo o texto principal da vaga para buscar as flags de "Já aplicado"
-        texto_vaga = await page.locator("main").inner_text()
-        texto_vaga_lower = texto_vaga.lower()
-        
-        flags_aplicado = ["candidatura enviada", "você se candidatou", "applied to this job", "candidatou-se"]
-        if any(flag in texto_vaga_lower for flag in flags_aplicado):
-            return "PULO", "Vaga já aplicada anteriormente"
-
-        # 2. VERIFICAÇÃO DE LOCALIZAÇÃO (Regra de Negócio)
-        vaga_valida = await analisar_local_vaga(page)
-        if not vaga_valida:
-            return "PULO", "Bloqueada por Localização (Presencial fora de SP)"
-
-        # 3. TENTA APLICAR
-        botao_candidatura = page.locator(".jobs-apply-button").first
-        if await botao_candidatura.is_visible():
-            print("\n✨ Iniciando fluxo de candidatura...")
-            await botao_candidatura.click()
-            sucesso = await preencher_formulario_dinamico(page)
-            if sucesso:
-                return "SUCESSO", "Candidatura enviada"
-            else:
-                return "ERRO", "Travou no Formulário"
-                
-        return "PULO", "Botão 'Candidatura Simplificada' não disponível"
-        
-    except Exception as e:
-        print(f"❌ Erro no fluxo inicial: {e}")
-        return "ERRO", f"Erro Técnico: {e}"
-
-# ==========================================
-# 🚀 FUNÇÃO PRINCIPAL
-# ==========================================
-async def main():
-    async with async_playwright() as p:
-        browser, page = await iniciar_navegador(p)
-        
-        await page.goto("https://www.linkedin.com/jobs")
-        await human_delay(3, 5)
-        
-        if "login" in page.url or await page.locator('button:has-text("Entrar")').is_visible():
-            print("\n" + "="*50)
-            print("⚠️  PAUSA PARA LOGIN MANUAL")
-            print("1. Faça login na janela do navegador.")
-            print("2. Vá até a aba de Vagas.")
-            print("3. Volte aqui e pressione ENTER.")
-            print("="*50)
-            input("Pressione ENTER quando estiver logado... ")
-
-        for termo in TERMOS_BUSCA:
-            print(f"\n" + "="*40)
-            print(f"🔎 BUSCANDO VAGAS PARA: {termo.upper()}")
-            print("="*40)
-            url_busca = f"https://www.linkedin.com/jobs/search/?keywords={termo}&f_TPR=r86400&f_E=2%2C3&f_AL=true"
-            await page.goto(url_busca)
-            await human_delay(4, 6)
-
-            vagas_locators = await page.locator(".job-card-container--clickable").all()
-
-            if not vagas_locators:
-                print("⚠️ Nenhuma vaga encontrada para este termo.")
+            pergunta = pergunta.strip()
+            if len(pergunta) < 2: 
+                await campo.evaluate("el => el.style.border = ''")
                 continue
 
-            print(f"📊 {len(vagas_locators)} vagas encontradas (limitando a 5 por termo para segurança)")
+            print(f"🔎 Analisando: {pergunta[:45]}...")
 
-            for i in range(min(len(vagas_locators), 5)):
-                try:
-                    await vagas_locators[i].click()
-                    await human_delay(2, 4)
+            tag = await campo.evaluate("el => el.tagName")
+            role = await campo.get_attribute("role")
 
+            await page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+
+            if tag == "SELECT":
+                opcoes = await campo.locator("option").all_inner_texts()
+                opcoes = [o.strip() for o in opcoes if o.strip() and "selecione" not in o.lower()]
+                resposta = await perguntar_para_ia(pergunta, descricao, opcoes)
+                if resposta:
+                    print(f"🧠 Bot preencheu: {resposta}")
+                    try: await campo.select_option(label=resposta)
+                    except: pass
+
+            elif role == "combobox":
+                await campo.click(force=True)
+                await asyncio.sleep(1)
+                
+                opcoes_locator = modal.locator("[role='option']")
+                opcoes = await opcoes_locator.all_inner_texts()
+                opcoes = [o.strip() for o in opcoes if o.strip()]
+                
+                resposta = await perguntar_para_ia(pergunta, descricao, opcoes)
+                if resposta:
+                    print(f"🧠 Bot preencheu: {resposta}")
                     try:
-                        titulo_vaga = await page.locator(".job-details-jobs-unified-top-card__job-title").inner_text()
-                        titulo_vaga = titulo_vaga.strip()
+                        opcao_alvo = opcoes_locator.filter(has_text=resposta).first
+                        await opcao_alvo.click(force=True)
                     except:
-                        titulo_vaga = "Título Indisponível"
+                        try:
+                            await campo.fill(str(resposta))
+                            await asyncio.sleep(0.5)
+                            await page.keyboard.press("ArrowDown")
+                            await page.keyboard.press("Enter")
+                        except: pass
+            
+            else:
+                if not await campo.input_value():
+                    resposta = await perguntar_para_ia(pergunta, descricao)
+                    if resposta:
+                        print(f"🧠 Bot digitou: {resposta}")
+                        await campo.click(force=True)
+                        await campo.focus()
+                        await page.keyboard.type(str(resposta), delay=50)
 
-                    link_vaga = page.url
-                    print(f"\n➡️ [Vaga {i+1}] {titulo_vaga}")
+            await campo.evaluate("el => el.style.border = ''")
 
-                    await page.mouse.wheel(0, random.randint(200, 600))
-                    await human_delay(1, 2)
+        # Rádios (Sim/Não) 
+        fieldsets = await modal.locator("fieldset").all()
+        for fs in fieldsets:
+            if not await fs.is_visible(): continue
+            try:
+                legend = await fs.locator("legend, span").first.inner_text()
+                resposta = await perguntar_para_ia(legend, descricao)
+                if resposta:
+                    print(f"🧠 Bot escolheu Rádio: {resposta}")
+                    botao = fs.locator(f"label:has-text('{resposta}')")
+                    if await botao.count() > 0: await botao.first.click(force=True)
+            except: pass
 
-                    # A MÁGICA DO ROTEAMENTO DE RESULTADOS AQUI:
-                    status, motivo = await aplicar_na_vaga_atual(page)
+    except Exception as e:
+        print(f"⚠️ Erro ao preencher form: {e}")
 
-                    if status == "SUCESSO":
-                        print("✅ SUCESSO: Candidatura enviada com sucesso!")
-                        
-                    elif status == "PULO":
-                        print(f"🟡 SKIP: {motivo} (Não será salva no CSV)")
-                        
-                    elif status == "ERRO":
-                        print(f"🔴 FALHA: {motivo} | 📝 Salvando para análise manual no CSV...")
-                        salvar_vaga_pendente(termo, titulo_vaga, link_vaga)
-                        
-                        # Limpa a tela fechando modais se o bot travou
-                        await page.keyboard.press("Escape")
-                        await human_delay(1, 2)
-                        botao_descartar = page.get_by_role("button", name="Descartar", exact=False)
-                        if await botao_descartar.is_visible():
-                            await botao_descartar.click()
+# ==========================================
+# 🚀 FLUXO DE CANDIDATURA
+# ==========================================
+async def aplicar(page):
+    try:
+        vaga_ok, motivo_local = await analisar_local_vaga(page)
+        if not vaga_ok: return "PULO", motivo_local
 
-                    await human_delay(4, 8)
+        descricao = await page.locator("#job-details").inner_text()
 
-                except Exception as e:
-                    print(f"❌ Erro fatal na vaga {i}: {e}")
-                    continue
+        botao = page.locator(".jobs-apply-button").first
+        if not await botao.is_visible():
+            return "PULO", "Sem botão Simplificada"
 
-        print("\n✅ Ciclo finalizado com sucesso.")
-        print(f"📁 Verifique '{ARQUIVO_PENDENTES}' APENAS para os formulários que o bot não soube preencher.")
+        await botao.click()
+
+        for _ in range(6): 
+            await human_delay(2, 3)
+            await responder_formulario(page, descricao)
+
+            botoes_enviar = ["Enviar candidatura", "Submit application"]
+            for texto in botoes_enviar:
+                btn_send = page.get_by_role("button", name=texto, exact=False).filter(has_text=texto)
+                if await btn_send.is_visible() and await btn_send.is_enabled():
+                    await btn_send.click()
+                    await human_delay(2, 3)
+                    await page.keyboard.press("Escape") 
+                    return "SUCESSO", "Candidatura enviada"
+
+            botoes_next = ["Avançar", "Próximo", "Next", "Review", "Revisar", "Continuar"]
+            clicou_avancar = False
+            for texto in botoes_next:
+                btn_next = page.get_by_role("button", name=texto, exact=False).filter(has_text=texto)
+                if await btn_next.is_visible() and await btn_next.is_enabled():
+                    await btn_next.click()
+                    clicou_avancar = True
+                    break
+            
+            if clicou_avancar: continue
+            break 
+
+        await page.keyboard.press("Escape")
+        try: await page.get_by_role("button", name="Descartar").click()
+        except: pass
+        return "PULO", "Fluxo incompleto ou travado"
+
+    except Exception as e:
+        return "ERRO", str(e)
+
+# ==========================================
+# ⚙️ EXECUTOR PRINCIPAL
+# ==========================================
+async def main():
+    iniciar_db()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch_persistent_context(
+            USER_DATA_DIR,
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+        page = await browser.new_page()
+
+        try:
+            if hasattr(playwright_stealth, "stealth_async"):
+                await playwright_stealth.stealth_async(page)
+            else:
+                playwright_stealth.stealth_sync(page)
+        except: pass
+
+        await page.goto("https://www.linkedin.com/jobs")
+        if "login" in page.url or await page.locator('button:has-text("Entrar")').is_visible():
+            input("⚠️ FAÇA LOGIN NO NAVEGADOR E PRESSIONE ENTER AQUI...")
+
+        for termo in TERMOS_BUSCA:
+            for pagina in range(MAX_PAGINAS):
+                offset = pagina * 25
+                print(f"\n🔎 BUSCANDO: {termo} | PÁGINA: {pagina+1}")
+                
+                url = f"https://www.linkedin.com/jobs/search/?keywords={termo}&f_TPR=r86400&f_AL=true&f_E=2%2C3&start={offset}"
+                await page.goto(url)
+                await human_delay(4, 6)
+
+                await rolar_lista_de_vagas(page)
+                vagas = await page.locator(".job-card-container--clickable").all()
+
+                if not vagas:
+                    print("📭 Fim das vagas para este termo.")
+                    break
+
+                for i in range(len(vagas)):
+                    try:
+                        id_vaga = await vagas[i].get_attribute("data-job-id")
+
+                        if vaga_ja_processada(id_vaga):
+                            print(f"⏭️ [CACHE] Vaga {id_vaga} ignorada (Já processada).")
+                            continue
+
+                        await vagas[i].click()
+                        await human_delay(2, 3)
+
+                        try: titulo = await page.locator("h1").inner_text()
+                        except: titulo = "Vaga"
+
+                        status, motivo = await aplicar(page)
+                        print(f"[{status}] {titulo[:40]} -> {motivo}")
+
+                        registrar_no_db(id_vaga, titulo, termo, status, page.url)
+
+                        if status == "SUCESSO":
+                            enviar_telegram(f"✅ Nova Candidatura!\nVaga: {titulo}\nTermo: {termo}")
+
+                        await human_delay(3, 5)
+
+                    except Exception as e:
+                        print(f"⚠️ Erro no loop de vagas: {e}")
+
+        print("\n✅ CICLO DE BUSCA FINALIZADO!")
+        enviar_telegram("🏁 O AutoApply concluiu as buscas com sucesso!")
         await browser.close()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Bot interrompido pelo usuário.")
+    asyncio.run(main())

@@ -12,3 +12,6 @@ vagas_pendentes.csv
 # Cache do Python
 __pycache__/
 *.py[cod]
+
+*.db
+*.db-journal
