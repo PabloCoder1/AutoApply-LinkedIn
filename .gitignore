@@ -1,17 +1,10 @@
-# Ambientes Virtuais
-venv/
-env/
+# Ignorar variáveis de ambiente (Protege sua API Key)
 .env
 
-# Sessão e Cookies (NUNCA SUBIR ISSO)
-linkedin_session/
-
-# Arquivos locais de auditoria (opcional subir ou não, mas recomendo ignorar no inicio)
-vagas_pendentes.csv
-
-# Cache do Python
-__pycache__/
-*.py[cod]
-
+# Ignorar banco de dados local do SQLite
 *.db
 *.db-journal
+
+# Ignorar arquivos temporários do Python e da sessão do LinkedIn
+__pycache__/
+linkedin_session/
